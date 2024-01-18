@@ -910,6 +910,9 @@ class HardwareManager(object, metaclass=abc.ABCMeta):
     def get_bmc_address(self):
         raise errors.IncompatibleHardwareMethodError()
 
+    def get_bmc_network(self):
+        raise errors.IncompatibleHardwareMethodError()
+    
     def get_bmc_mac(self):
         raise errors.IncompatibleHardwareMethodError()
 
@@ -1039,10 +1042,12 @@ class HardwareManager(object, metaclass=abc.ABCMeta):
         hardware_info['disks'] = self.list_block_devices()
         hardware_info['memory'] = self.get_memory()
         hardware_info['bmc_address'] = self.get_bmc_address()
+        hardware_info['bmc_network'] = self.get_bmc_network()
         hardware_info['bmc_v6address'] = self.get_bmc_v6address()
         hardware_info['system_vendor'] = self.get_system_vendor_info()
         hardware_info['boot'] = self.get_boot_info()
         hardware_info['hostname'] = netutils.get_hostname()
+        hardware_info['test'] = "Hello World"
 
         try:
             hardware_info['bmc_mac'] = self.get_bmc_mac()
@@ -1246,6 +1251,8 @@ class HardwareManager(object, metaclass=abc.ABCMeta):
         :param file_list: List of full file paths to include.
         """
         raise errors.IncompatibleHardwareMethodError()
+
+
 
 
 class GenericHardwareManager(HardwareManager):
@@ -2208,12 +2215,7 @@ class GenericHardwareManager(HardwareManager):
                     ).format(block_device, e))
             raise errors.BlockDeviceEraseError(msg)
 
-    def get_bmc_address(self):
-        """Attempt to detect BMC IP address
-
-        :return: IP address with prefix of lan channel or 0.0.0.0/0 in case none of them is
-                 configured properly
-        """
+    def get_bmc_network(self):
         try:
             # From all the channels 0-15, only 1-11 can be assigned to
             # different types of communication media and protocols and
@@ -2221,7 +2223,7 @@ class GenericHardwareManager(HardwareManager):
             for channel in range(1, 12):
                 out, e = il_utils.execute(
                     "ipmitool lan print {} | awk '/IP Address[ \t]*:/ {ip1=$4} "
-                    "/Subnet Mask[ \t]*:/ {ip2=$4} END {print ip1 "," ip2}'".format(channel), shell=True)
+                    "/Subnet Mask[ \t]*:/ {ip2=$4} END {print ip1 ", " ip2}'".format(channel), shell=True)
 
                 if e.startswith("Invalid channel"):
                     continue
@@ -2246,6 +2248,43 @@ class GenericHardwareManager(HardwareManager):
             return
 
         return '0.0.0.0/0'
+
+    def get_bmc_address(self):
+        """Attempt to detect BMC IP address
+
+        :return: IP address of lan channel or 0.0.0.0 in case none of them is
+                 configured properly
+        """
+        try:
+            # From all the channels 0-15, only 1-11 can be assigned to
+            # different types of communication media and protocols and
+            # effectively used
+            for channel in range(1, 12):
+                out, e = il_utils.execute(
+                    "ipmitool lan print {} | awk '/IP Address[ \\t]*:/"
+                    " {{print $4}}'".format(channel), shell=True)
+                if e.startswith("Invalid channel"):
+                    continue
+                out = out.strip()
+
+                try:
+                    ipaddress.ip_address(out)
+                except ValueError as exc:
+                    LOG.warning('Invalid IP address %(output)s: %(exc)s',
+                                {'output': out, 'exc': exc})
+                    continue
+
+                # In case we get 0.0.0.0 on a valid channel, we need to keep
+                # querying
+                if out != '0.0.0.0':
+                    return out
+
+        except (processutils.ProcessExecutionError, OSError) as e:
+            # Not error, because it's normal in virtual environment
+            LOG.warning("Cannot get BMC address: %s", e)
+            return
+
+        return '0.0.0.0'
 
     def get_bmc_mac(self):
         """Attempt to detect BMC MAC address
