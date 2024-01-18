@@ -1043,7 +1043,6 @@ class HardwareManager(object, metaclass=abc.ABCMeta):
         hardware_info['system_vendor'] = self.get_system_vendor_info()
         hardware_info['boot'] = self.get_boot_info()
         hardware_info['hostname'] = netutils.get_hostname()
-        hardware_info['test'] = "Hello World"
 
         try:
             hardware_info['bmc_mac'] = self.get_bmc_mac()
@@ -2212,7 +2211,7 @@ class GenericHardwareManager(HardwareManager):
     def get_bmc_address(self):
         """Attempt to detect BMC IP address
 
-        :return: IP address of lan channel or 0.0.0.0 in case none of them is
+        :return: IP address with prefix of lan channel or 0.0.0.0/0 in case none of them is
                  configured properly
         """
         try:
@@ -2221,30 +2220,32 @@ class GenericHardwareManager(HardwareManager):
             # effectively used
             for channel in range(1, 12):
                 out, e = il_utils.execute(
-                    "ipmitool lan print {} | awk '/IP Address[ \\t]*:/"
-                    " {{print $4}}'".format(channel), shell=True)
+                    "ipmitool lan print {} | awk '/IP Address[ \t]*:/ {ip1=$4} "
+                    "/Subnet Mask[ \t]*:/ {ip2=$4} END {print ip1 "," ip2}'".format(channel), shell=True)
+
                 if e.startswith("Invalid channel"):
                     continue
                 out = out.strip()
-
+                ip, netmask = out.split(",")
                 try:
-                    ipaddress.ip_address(out)
+                    ipaddress.ip_address(ip)
+                    prefix = ipaddress.ip_network(f'{ip}/{netmask}', False)
                 except ValueError as exc:
                     LOG.warning('Invalid IP address %(output)s: %(exc)s',
-                                {'output': out, 'exc': exc})
+                                {'output': ip, 'exc': exc})
                     continue
 
                 # In case we get 0.0.0.0 on a valid channel, we need to keep
                 # querying
-                if out != '0.0.0.0':
-                    return out
+                if ip != '0.0.0.0':
+                    return f'{ip}/{prefix.prefixlen}'
 
         except (processutils.ProcessExecutionError, OSError) as e:
             # Not error, because it's normal in virtual environment
             LOG.warning("Cannot get BMC address: %s", e)
             return
 
-        return '0.0.0.0'
+        return '0.0.0.0/0'
 
     def get_bmc_mac(self):
         """Attempt to detect BMC MAC address
